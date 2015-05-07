@@ -126,30 +126,32 @@ class LargeDataTests(unittest.TestCase):
         test_wide_batch_rows tests inserting a wide row of data using batching. It will then attempt to query
         that data and ensure that all of it has been inserted appropriately.
 
-        @expected_errors OperationTimedOut on insertion occasionally
-        @since 1.2
-        @jira_ticket
+        @since 1.0
         @expected_result all items should be inserted, and verified.
 
         @test_category queries
         """
+
+        # Table Creation
         table = 'wide_batch_rows'
         session = self.make_session_and_keyspace()
         session.execute('CREATE TABLE %s (k INT, i INT, PRIMARY KEY(k, i))' % table)
 
-        # Write
+        # Run batch insert
         statement = 'BEGIN BATCH '
-        to_insert=10000
+        to_insert = 2000
         for i in range(to_insert):
             statement += 'INSERT INTO %s (k, i) VALUES (%s, %s) ' % (table, 0, i)
         statement += 'APPLY BATCH'
         statement = SimpleStatement(statement, consistency_level=ConsistencyLevel.QUORUM)
+
+        # Execute insert with larger timeout, since it's a wide row
         try:
             session.execute(statement,timeout=30.0)
 
         except OperationTimedOut:
             #If we timeout on insertion that's bad but it could be just slow underlying c*
-            #Attempt to validate anyway.
+            #Attempt to validate anyway, we will fail if we don't get the right data back.
             ex_type, ex, tb = sys.exc_info()
             log.warn("Batch wide row insertion timed out, this may require additional investigation")
             log.warn("{0}: {1} Backtrace: {2}".format(ex_type.__name__, ex, traceback.extract_tb(tb)))
@@ -157,33 +159,49 @@ class LargeDataTests(unittest.TestCase):
 
         # Verify
         results = session.execute('SELECT i FROM %s WHERE k=%s' % (table, 0))
-        lastvalue=0
+        lastvalue = 0
         for j, row in enumerate(results):
             lastValue=row['i']
             self.assertEqual(lastValue, j)
 
-        index_value=to_insert-1
+        #check the last value make sure it's what we expect
+        index_value = to_insert-1
         self.assertEqual(lastValue,index_value,"Verification failed only found {0} inserted we were expecting {1}".format(j,index_value))
         session.cluster.shutdown()
 
     def test_wide_byte_rows(self):
+        """
+        Test for inserting wide row of bytes
+
+        test_wide_batch_rows tests inserting a wide row of data bytes. It will then attempt to query
+        that data and ensure that all of it has been inserted appropriately.
+
+        @since 1.0
+        @expected_result all items should be inserted, and verified.
+
+        @test_category queries
+        """
+
+        # Table creation
         table = 'wide_byte_rows'
         session = self.make_session_and_keyspace()
         session.execute('CREATE TABLE %s (k INT, i INT, v BLOB, PRIMARY KEY(k, i))' % table)
 
+        # Prepare statement and run insertions
+        to_insert=100000
         prepared = session.prepare('INSERT INTO %s (k, i, v) VALUES (0, ?, 0xCAFE)' % (table, ))
-
-        # Write
-        self.batch_futures(session, (prepared.bind((i, )) for i in range(100000)))
+        self.batch_futures(session, (prepared.bind((i, )) for i in range(to_insert)))
 
         # Read
         results = session.execute('SELECT i, v FROM %s WHERE k=0' % (table, ))
 
         # Verify
         bb = pack('>H', 0xCAFE)
-        for row in results:
+        for i, row in enumerate(results):
             self.assertEqual(row['v'], bb)
-        #print i
+        index_value = to_insert-1
+        self.assertEqual(i,index_value,"Verification failed only found {0} inserted we were expecting {1}".format(i,index_value))
+
         session.cluster.shutdown()
 
     def test_large_text(self):
