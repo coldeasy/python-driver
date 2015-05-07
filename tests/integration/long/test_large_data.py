@@ -120,25 +120,50 @@ class LargeDataTests(unittest.TestCase):
         session.cluster.shutdown()
 
     def test_wide_batch_rows(self):
+        """
+        Test for inserting wide rows with batching
+
+        test_wide_batch_rows tests inserting a wide row of data using batching. It will then attempt to query
+        that data and ensure that all of it has been inserted appropriately.
+
+        @expected_errors OperationTimedOut on insertion occasionally
+        @since 1.2
+        @jira_ticket
+        @expected_result all items should be inserted, and verified.
+
+        @test_category queries
+        """
         table = 'wide_batch_rows'
         session = self.make_session_and_keyspace()
         session.execute('CREATE TABLE %s (k INT, i INT, PRIMARY KEY(k, i))' % table)
 
         # Write
         statement = 'BEGIN BATCH '
-        for i in range(2000):
+        to_insert=10000
+        for i in range(to_insert):
             statement += 'INSERT INTO %s (k, i) VALUES (%s, %s) ' % (table, 0, i)
         statement += 'APPLY BATCH'
         statement = SimpleStatement(statement, consistency_level=ConsistencyLevel.QUORUM)
-        session.execute(statement)
+        try:
+            session.execute(statement,timeout=30.0)
 
-        # Read
-        results = session.execute('SELECT i FROM %s WHERE k=%s' % (table, 0))
+        except OperationTimedOut:
+            #If we timeout on insertion that's bad but it could be just slow underlying c*
+            #Attempt to validate anyway.
+            ex_type, ex, tb = sys.exc_info()
+            log.warn("Batch wide row insertion timed out, this may require additional investigation")
+            log.warn("{0}: {1} Backtrace: {2}".format(ex_type.__name__, ex, traceback.extract_tb(tb)))
+            del tb
 
         # Verify
-        for i, row in enumerate(results):
-            self.assertEqual(row['i'], i)
+        results = session.execute('SELECT i FROM %s WHERE k=%s' % (table, 0))
+        lastvalue=0
+        for j, row in enumerate(results):
+            lastValue=row['i']
+            self.assertEqual(lastValue, j)
 
+        index_value=to_insert-1
+        self.assertEqual(lastValue,index_value,"Verification failed only found {0} inserted we were expecting {1}".format(j,index_value))
         session.cluster.shutdown()
 
     def test_wide_byte_rows(self):
@@ -158,7 +183,7 @@ class LargeDataTests(unittest.TestCase):
         bb = pack('>H', 0xCAFE)
         for row in results:
             self.assertEqual(row['v'], bb)
-
+        #print i
         session.cluster.shutdown()
 
     def test_large_text(self):
